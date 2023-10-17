@@ -14,9 +14,10 @@ public class LaneManager : Singleton<LaneManager>
     // The prefab that will be used for the note
     public Note _notePrefab;
     
-    public GameObject _longNotePrefab;
+    public LongNote _longNotePrefab;
     // The list of all notes in the song
     List<Note> notes = new List<Note>();
+    List<LongNote> longNotes = new List<LongNote>();
     // The times in the song where the notes are positioned
     [HideInInspector] public List<double> timeStamps = new List<double>();
     // The Y positions for each note that correlate with each time stamp
@@ -26,10 +27,12 @@ public class LaneManager : Singleton<LaneManager>
     private Queue<int> noteDeletionIndexQueue = new Queue<int>();
     // The object pool created for preallocating note objects to replace instantiation/destroy calls at runtime
     public ObjectPool<Note> _notePool;
+    public ObjectPool<LongNote> _longNotePool;
 
     // Indexes for tracking the current note in the song
     private int spawnIndex = 0;
     private int inputIndex = 0;
+    private int longNoteIndex = 0;
 
     // The current time in the song
     private double audioTime;
@@ -71,6 +74,18 @@ public class LaneManager : Singleton<LaneManager>
         }, note => {
             Destroy(note.gameObject);
         }, false,
+        20,
+        60
+        );
+
+        _longNotePool = new ObjectPool<LongNote>(CreateLongNote,
+        note => {
+            note.gameObject.SetActive(true);
+        }, note => {
+            note.gameObject.SetActive(false);
+        }, note => {
+            Destroy(note.gameObject);
+        }, false,
         10,
         20
         );
@@ -80,7 +95,8 @@ public class LaneManager : Singleton<LaneManager>
     // Called before the first frame of Update()
     private void Start()
     {
-        CreateNote(5);
+        CreateNote(10);
+        CreateLongNote(5);
     }
 
     // Overloaded method for instantiating each individual note
@@ -96,6 +112,23 @@ public class LaneManager : Singleton<LaneManager>
         for (int i = 0; i < amount; i++)
         {
             Note note = _notePool.Get();
+            note.gameObject.SetActive(false);
+        }
+    }
+
+    // Overloaded method for instantiating each individual long note
+    private LongNote CreateLongNote()
+    {
+        LongNote note = Instantiate(_longNotePrefab, transform.position + Vector3.right * SongManager.Instance.noteSpawnX * 2, Quaternion.identity, transform);
+        return note;
+    }
+
+    // Overloaded method for preallocating long note objects in the pool
+    private void CreateLongNote(int amount)
+    {
+        for (int i = 0; i < amount; i++)
+        {
+            var note = _longNotePool.Get();
             note.gameObject.SetActive(false);
         }
     }
@@ -192,7 +225,20 @@ public class LaneManager : Singleton<LaneManager>
                 Note note = _notePool.Get();
                 note.Init(yPos);
                 notes.Add(note);
+                
                 note.assignedTime = (float)timeStamps[spawnIndex];
+
+                // SPAWN LONG NOTE
+                if (heldNotes[spawnIndex + 1])
+                {
+                    LongNote longNote = _longNotePool.Get();
+                    // Instantiate(_longNotePrefab, new Vector3(SongManager.Instance.noteSpawnX, yPos, 0), Quaternion.identity) as LongNote;
+                    longNote.Init(yPos, (float)timeStamps[spawnIndex + 1]);
+                    longNote.assignedTime = (float)timeStamps[spawnIndex];
+
+                    longNotes.Add(longNote);
+                }
+
                 spawnIndex++;
             }
             else if (noteSpawnCooldownComplete && SongManager.GetAudioSourceTime() >= timeStamps[spawnIndex] - SongManager.Instance.noteTime - enemyTime)
@@ -201,8 +247,6 @@ public class LaneManager : Singleton<LaneManager>
                 float yPos = ScreenManager.Instance.InsideLanesYPositions[timeYIndex[spawnIndex]];
                 NoteSpawned?.Invoke(new Vector3(SongManager.Instance.noteSpawnX, yPos, 0));
 
-                if (heldNotes[spawnIndex + 1])
-                    Instantiate(_longNotePrefab, new Vector3(SongManager.Instance.noteSpawnX, yPos, 0), Quaternion.identity);
             }
         }
 
@@ -233,8 +277,15 @@ public class LaneManager : Singleton<LaneManager>
                     if (nextNoteIsHeldNote)
                     {
                         notes[tempIndex + 1].GreyOutNote();
+                        longNotes[longNoteIndex].GreyOutNote();
+                        longNoteIndex++;
                     }
-                }                
+                }
+                // else
+                // {
+                //     longNotes[longNoteIndex].ReleaseNote();
+                //     longNoteIndex++;
+                // }                
             }
         }       
     }
@@ -271,7 +322,7 @@ public class LaneManager : Singleton<LaneManager>
             // Debug that helps with determine how off the player's swing was compared to the margins of error
             // print($"lane: {gameObject.name} xPosDiff: {xPosDifference} yPosDiff: {yPosDifference}");
 
-            // If the player's swing is perfect
+            // If the player's swing is perfect (within 1/4 margin of error)
             if (xPosDifference < marginOfErrorX / 4f && yPosDifference < marginOfErrorY && !PlayerInput.Instance.IsSpinSlashing && !isHeldNote)
             {
                 PerfectHit();
@@ -284,6 +335,7 @@ public class LaneManager : Singleton<LaneManager>
                 if (heldNotes[inputIndex + 1])
                 {
                     StartCoroutine(WaitForSpinSlash(0.5f));
+                    longNotes[longNoteIndex].StartDecrease();
                 }
 
                 AnimateObjects(timeYIndex[inputIndex]);
@@ -303,6 +355,7 @@ public class LaneManager : Singleton<LaneManager>
                 if (heldNotes[inputIndex + 1])
                 {
                     StartCoroutine(WaitForSpinSlash(0.5f));
+                    longNotes[longNoteIndex].StartDecrease();
                 }
 
                 AnimateObjects(timeYIndex[inputIndex]);
@@ -340,7 +393,7 @@ public class LaneManager : Singleton<LaneManager>
             if (PlayerInput.Instance.IsSpinSlashing) break;
             yield return null;
         }
-        print("got to here!");
+        //print("got to here!");
         if (PlayerInput.Instance.IsSpinSlashing)
             StartCoroutine(WaitForHeldNoteOnBeat());
         else
@@ -349,6 +402,9 @@ public class LaneManager : Singleton<LaneManager>
             Miss();
             AudioManager.Instance.PlaySFX("MissNote");
             notes[inputIndex].GreyOutNote();
+            longNotes[longNoteIndex].GreyOutNote();
+            longNotes[longNoteIndex].EndDecrease();
+            longNoteIndex++;
         }
     }
 
@@ -379,6 +435,9 @@ public class LaneManager : Singleton<LaneManager>
             Miss();
             AudioManager.Instance.PlaySFX("MissNote");
             notes[inputIndex].GreyOutNote();
+            longNotes[longNoteIndex].GreyOutNote();
+            longNotes[longNoteIndex].EndDecrease();
+            longNoteIndex++;
         }
     }
 
@@ -393,6 +452,8 @@ public class LaneManager : Singleton<LaneManager>
             AnimateObjects(timeYIndex[inputIndex]);
             notes[inputIndex].ReleaseNote();
             //notes[inputIndex].GreyOutNote();
+            longNotes[longNoteIndex].ReleaseNote();
+            longNoteIndex++;
             inputIndex++;
         }
     }
